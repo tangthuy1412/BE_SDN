@@ -1,205 +1,136 @@
+const mongoose = require('mongoose');
 const Quiz = require('../models/Quiz');
 const Question = require('../models/Question');
-const mongoose = require('mongoose');
+const { AppError } = require('../middleware/errorHandler');
 
-function normalizeOptions(options) {
-
-  if (!options) return [];
-
-  if (Array.isArray(options)) {
-    return options.map(o => o.trim());
-  }
-
-  return [options.trim()];
-
+function publicQuestion(question, revealAnswers = false) {
+  const value = question.toObject ? question.toObject() : question;
+  if (revealAnswers) return value;
+  const { correctAnswerIndex, explanation, ...safe } = value;
+  return safe;
 }
-// GET /quizzes
+
 exports.getAllQuizzes = async (req, res) => {
-  const quizzes = await Quiz.find().populate('questions');
-  res.json(quizzes);
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+  const filter = {};
+  if (req.query.category) filter.category = req.query.category;
+  if (req.query.difficulty) filter.difficulty = req.query.difficulty;
+  if (req.query.published !== 'all') filter.isPublished = true;
+  if (req.query.search) filter.$text = { $search: req.query.search };
+
+  const [data, total] = await Promise.all([
+    Quiz.find(filter)
+      .select('-questions')
+      .populate('author', 'username')
+      .sort(req.query.sort === 'oldest' ? 'createdAt' : '-createdAt')
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Quiz.countDocuments(filter)
+  ]);
+
+  res.json({ data, meta: { page, limit, total, pages: Math.ceil(total / limit) } });
 };
 
-// GET /quizzes/:quizId/populate (capital + animal)
-exports.getQuizWithCapitalAndAnimal = async (req, res) => {
-  const { quizId } = req.params;
-
-  const quiz = await Quiz.findById(quizId).populate({
-    path: 'questions',
-    match: {
-      keywords: { $in: ['capital', 'animal'] }
-    }
-  });
-
-  res.json(quiz);
-};
-
-// POST /quizzes
-exports.createQuiz = async (req, res, next) => {
-  try {
-    const quiz = new Quiz({
-      title: req.body.title,
-      description: req.body.description,
-      author: req.user._id   // 👈 QUAN TRỌNG
-    });
-
-    await quiz.save();
-
-    res.status(201).json(quiz);
-  } catch (err) {
-    next(err);
-  }
-};
-
-// DELETE /quizzes/:id
-exports.deleteQuiz = async (req, res) => {
-  await req.quiz.deleteOne();
-  res.json({ message: 'Quiz deleted successfully' });
-};
-
-
-// GET only capital
-exports.getQuizQuestionsWithCapital = async (req, res) => {
-  const quiz = await Quiz.findById(req.params.quizId).populate({
-    path: 'questions',
-    match: { text: /capital/i }
-  });
-
-  res.json(quiz);
-};
-
-// POST one question
-exports.addOneQuestion = async (req, res) => {
-  try {
-
-    console.log("PARAMS:", req.params);
-
-    const options = normalizeOptions(req.body.options);
-
-    const newQuestion = await Question.create({
-      text: req.body.text,
-      options: options,
-      quizId: new mongoose.Types.ObjectId(req.params.quizId), // 🔥 ép kiểu ObjectId
-      correctAnswerIndex: Number(req.body.correctAnswerIndex),
-      keywords: req.body.keywords
-        ? req.body.keywords.split(',').map(k => k.trim())
-        : [],
-      author: req.user._id
-    });
-
-    res.status(201).json(newQuestion);
-
-  } catch (err) {
-
-    console.log(err);
-
-    res.status(500).json({ error: err.message });
-
-  }
-};
-// POST many questions
-exports.addManyQuestions = async (req, res) => {
-  try {
-    if (!Array.isArray(req.body)) {
-      return res.status(400).json({ error: "Body must be an array" });
-    }
-
-    const questionsWithAuthor = req.body.map(q => ({
-      ...q,
-      author: req.user._id
-    }));
-
-    const questions = await Question.insertMany(questionsWithAuthor);
-
-    const ids = questions.map(q => q._id);
-
-    await Quiz.findByIdAndUpdate(req.params.quizId, {
-      $push: { questions: { $each: ids } }
-    });
-
-    res.json(questions);
-
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-};
-// UPDATE /quizzes/:quizId
-exports.updateQuiz = async (req, res) => {
-  const quiz = await Quiz.findById(req.params.quizId);
-
-  if (!quiz) {
-    return res.status(404).json({ message: 'Quiz not found' });
-  }
-
-  if (
-    !req.user.admin &&
-    quiz.author.toString() !== req.user._id.toString()
-  ) {
-    return res.status(403).json({
-      message: 'You do not have permission to edit this quiz'
-    });
-  }
-
-  Object.assign(quiz, req.body);
-  await quiz.save();
-
-  res.json(quiz);
-};
-
-// GET /quizzes/:quizId
 exports.getQuizById = async (req, res) => {
-  const { quizId } = req.params;
+  const quiz = await Quiz.findById(req.params.quizId)
+    .populate('author', 'username')
+    .populate('questions');
+  if (!quiz || !quiz.isPublished) throw new AppError(404, 'Quiz not found');
 
-  const quiz = await Quiz.findById(quizId).populate('questions');
-
-  if (!quiz) {
-    return res.status(404).json({ message: 'Quiz not found' });
-  }
-
-  res.json(quiz);
+  const result = quiz.toObject();
+  result.questions = result.questions.map(question => publicQuestion(question));
+  res.json(result);
 };
-exports.renderEditQuiz = async (req, res) => {
-  const { quizId } = req.params;
 
-  const quiz = await Quiz.findById(quizId).populate('questions');
+exports.createQuiz = async (req, res) => {
+  const quiz = await Quiz.create({ ...req.body, author: req.user._id });
+  res.status(201).json(quiz);
+};
 
-  if (!quiz) {
-    return res.status(404).send('Quiz not found');
+exports.updateQuiz = async (req, res) => {
+  Object.assign(req.quiz, req.body);
+  await req.quiz.save();
+  res.json(req.quiz);
+};
+
+exports.deleteQuiz = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await Question.deleteMany({ quizId: req.quiz._id }).session(session);
+      await Quiz.deleteOne({ _id: req.quiz._id }).session(session);
+    });
+  } finally {
+    await session.endSession();
   }
+  res.status(204).send();
+};
 
-  res.render('quiz/edit', {
-    quiz,
-    success: req.query.success === '1'
+exports.addOneQuestion = async (req, res) => {
+  const question = await Question.create({
+    ...req.body,
+    quizId: req.quiz._id,
+    author: req.user._id
+  });
+  req.quiz.questions.push(question._id);
+  await req.quiz.save();
+  res.status(201).json(question);
+};
+
+exports.addManyQuestions = async (req, res) => {
+  const session = await mongoose.startSession();
+  let questions;
+  try {
+    await session.withTransaction(async () => {
+      questions = await Question.insertMany(
+        req.body.map(question => ({
+          ...question,
+          quizId: req.quiz._id,
+          author: req.user._id
+        })),
+        { session }
+      );
+      req.quiz.questions.push(...questions.map(question => question._id));
+      await req.quiz.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
+  res.status(201).json(questions);
+};
+
+exports.submitQuiz = async (req, res) => {
+  const quiz = await Quiz.findOne({ _id: req.params.quizId, isPublished: true });
+  if (!quiz) throw new AppError(404, 'Quiz not found');
+
+  const questions = await Question.find({ quizId: quiz._id });
+  const details = questions.map(question => {
+    const selected = req.body.answers[question._id.toString()];
+    const isCorrect = selected === question.correctAnswerIndex;
+    return {
+      questionId: question._id,
+      selectedAnswerIndex: selected ?? null,
+      isCorrect,
+      earnedPoints: isCorrect ? question.points : 0,
+      points: question.points,
+      correctAnswerIndex: question.correctAnswerIndex,
+      explanation: question.explanation
+    };
+  });
+  const score = details.reduce((total, answer) => total + answer.earnedPoints, 0);
+  const maxScore = details.reduce((total, answer) => total + answer.points, 0);
+
+  res.json({
+    quizId: quiz._id,
+    score,
+    maxScore,
+    percentage: maxScore ? Math.round((score / maxScore) * 100) : 0,
+    correctAnswers: details.filter(answer => answer.isCorrect).length,
+    totalQuestions: questions.length,
+    details
   });
 };
-exports.submitQuiz = async (req, res) => {
-  try {
-    const quizId = req.params.quizId;
-    const questions = await Question.find({ quizId });
-    let score = 0;
-    const userAnswers = {};
 
-  questions.forEach(q => {
-  const userAnswer = answers["q_" + q._id]; // string index
-  userAnswers[q._id] = userAnswer;
-
-  if (parseInt(userAnswer) === q.correctAnswerIndex) {
-    score++;
-  }
-});
-
-    res.render('quiz/result', {
-      quizId,
-      total: questions.length,
-      score,
-      userAnswers,
-      questions
-    });
-
-  } catch (err) {
-    res.status(500).send('Error submitting quiz');
-  }
-};
-
-
-
-
+exports.publicQuestion = publicQuestion;

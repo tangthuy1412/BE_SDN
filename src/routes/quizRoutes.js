@@ -1,66 +1,48 @@
 const express = require('express');
-const router = express.Router();
-const quizController = require('../controllers/quizController');
+const { z } = require('zod');
+const controller = require('../controllers/quizController');
 const authenticate = require('../authenticate');
+const validate = require('../middleware/validate');
+const asyncHandler = require('../utils/asyncHandler');
+const { quizInput, quizUpdate, questionInput, answerInput } = require('../schemas');
 
-// ===============================
-// GET - Public (ai cũng được)
-// ===============================
-router.get('/', quizController.getAllQuizzes);
+const router = express.Router();
 
-router.get('/:quizId', quizController.getQuizById);
+router.get('/', asyncHandler(controller.getAllQuizzes));
+router.post('/', authenticate.verifyUser, validate(quizInput), asyncHandler(controller.createQuiz));
 
-
-// ===============================
-// POST - Admin only
-// ===============================
-router.post('/',
-  authenticate.verifyUser,
-  quizController.createQuiz
+router.post(
+  '/:quizId/submit',
+  validate(answerInput),
+  asyncHandler(controller.submitQuiz)
 );
-
-
-// UPDATE QUIZ
-router.put('/:quizId',
+router.post(
+  '/:quizId/questions',
   authenticate.verifyUser,
   authenticate.verifyQuizPermission,
-  quizController.updateQuiz
+  validate(z.array(questionInput).min(1).max(100)),
+  asyncHandler(controller.addManyQuestions)
 );
-
-// DELETE QUIZ
-router.delete('/:quizId',
+router.post(
+  '/:quizId/question',
   authenticate.verifyUser,
   authenticate.verifyQuizPermission,
-  quizController.deleteQuiz
+  validate(questionInput),
+  asyncHandler(controller.addOneQuestion)
 );
-
-
-// ===============================
-// Nếu có thao tác thêm question vào quiz
-// cũng nên giới hạn Admin
-// ===============================
-router.post('/:quizId/question',
+router.put(
+  '/:quizId',
   authenticate.verifyUser,
   authenticate.verifyQuizPermission,
-  quizController.addOneQuestion
+  validate(quizUpdate),
+  asyncHandler(controller.updateQuiz)
 );
-
-router.post('/:quizId/questions',
+router.delete(
+  '/:quizId',
   authenticate.verifyUser,
   authenticate.verifyQuizPermission,
-  quizController.addManyQuestions
+  asyncHandler(controller.deleteQuiz)
 );
+router.get('/:quizId', asyncHandler(controller.getQuizById));
 
-
-// Nếu đây chỉ là render view (không thay đổi dữ liệu)
-router.get('/:quizId/populate',
-  quizController.getQuizWithCapitalAndAnimal
-);
-
-router.get('/:quizId/edit',
-  authenticate.verifyUser,
-  authenticate.verifyQuizPermission,
-  quizController.renderEditQuiz
-);
-router.post('/:quizId/submit', quizController.submitQuiz);
 module.exports = router;

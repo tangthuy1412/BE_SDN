@@ -1,111 +1,49 @@
-const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const { AppError } = require('../middleware/errorHandler');
 
-const secretKey = process.env.SECRET_KEY;
+function createToken(user) {
+  return jwt.sign(
+    { sub: user._id.toString(), admin: user.admin },
+    process.env.SECRET_KEY,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '1h', issuer: 'quiz-api' }
+  );
+}
 
-// =======================
-// REGISTER
-// =======================
 exports.register = async (req, res) => {
-  try {
-    const { username, password, admin } = req.body;
-
-    if (!username || !password) {
-      return res.status(400).json({
-        message: "username and password are required"
-      });
-    }
-
-    const existingUser = await User.findOne({ username });
-
-    if (existingUser) {
-      return res.status(400).json({
-        message: "Username already exists"
-      });
-    }
-
-    const newUser = new User({
-      username,
-      password,
-      admin: admin || false
-    });
-
-    await newUser.save();
-
-    res.status(201).json({
-      message: "User registered successfully",
-      user: {
-        _id: newUser._id,
-        username: newUser.username,
-        admin: newUser.admin
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      message: "Register failed"
-    });
-  }
+  const user = await User.create({
+    username: req.body.username,
+    password: req.body.password
+  });
+  res.status(201).json({ token: createToken(user), user });
 };
-// =======================
-// LOGIN
-// =======================
+
 exports.login = async (req, res) => {
-  try {
-    const { username, password } = req.body;
-
-    const user = await User.findOne({ username });
-
-    if (!user || user.password !== password) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const token = jwt.sign(
-      {
-        _id: user._id,
-        username: user.username,
-        admin: user.admin
-      },
-      process.env.SECRET_KEY,
-      { expiresIn: '1h' }
-    );
-
-    res.json({
-      token,
-      user: {
-        _id: user._id,
-        username: user.username,
-        admin: user.admin
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({ message: "Login failed" });
+  const user = await User.findOne({ username: req.body.username.toLowerCase() })
+    .select('+password');
+  if (!user || !(await user.verifyPassword(req.body.password))) {
+    throw new AppError(401, 'Invalid username or password');
   }
+  res.json({ token: createToken(user), user });
 };
 
-// =======================
-// GET ALL USERS (Admin only)
-// =======================
-exports.getAllUsers = async (req, res, next) => {
-  try {
-    const users = await User.find({}).select('-password');
-    res.status(200).json(users);
-  } catch (err) {
-    next(err);
-  }
+exports.getMe = async (req, res) => res.json(req.user);
+
+exports.getAllUsers = async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+  const [data, total] = await Promise.all([
+    User.find().sort('-createdAt').skip((page - 1) * limit).limit(limit),
+    User.countDocuments()
+  ]);
+  res.json({ data, meta: { page, limit, total, pages: Math.ceil(total / limit) } });
 };
-exports.getUserById = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.params.userId).select('-password');
 
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.status(200).json(user);
-
-  } catch (err) {
-    next(err);
+exports.getUserById = async (req, res) => {
+  if (!req.user.admin && req.user._id.toString() !== req.params.userId) {
+    throw new AppError(403, 'You can only view your own profile');
   }
+  const user = await User.findById(req.params.userId);
+  if (!user) throw new AppError(404, 'User not found');
+  res.json(user);
 };

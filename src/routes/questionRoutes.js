@@ -1,42 +1,27 @@
 const express = require('express');
-const router = express.Router();
-const questionController = require('../controllers/questionController');
+const controller = require('../controllers/questionController');
 const authenticate = require('../authenticate');
+const validate = require('../middleware/validate');
+const asyncHandler = require('../utils/asyncHandler');
+const { questionUpdate } = require('../schemas');
 
-// ===============================
-// GET - Public
-// ===============================
-router.get('/', questionController.getAllQuestions);
+const router = express.Router();
 
-router.get('/:questionId', questionController.getQuestionById);
-router.get('/quiz/:quizId', questionController.getQuestionsByQuiz);
-
-// ===============================
-// POST - User login
-// ===============================
-router.post('/',
-  authenticate.verifyUser,
-  questionController.addOneQuestion
-);
-
-
-// ===============================
-// PUT - Only Author
-// ===============================
-router.put('/:questionId',
+router.get('/', asyncHandler(controller.getAllQuestions));
+router.get('/quiz/:quizId', asyncHandler(controller.getQuestionsByQuiz));
+router.get('/:questionId', asyncHandler(controller.getQuestionById));
+router.put(
+  '/:questionId',
   authenticate.verifyUser,
   authenticate.verifyAuthor,
-  questionController.updateQuestion
+  validate(questionUpdate),
+  asyncHandler(controller.updateQuestion)
 );
-
-
-// ===============================
-// DELETE - Only Author
-// ===============================
-router.delete('/:questionId',
+router.delete(
+  '/:questionId',
   authenticate.verifyUser,
   authenticate.verifyAuthor,
-  questionController.deleteQuestion
+  asyncHandler(controller.deleteQuestion)
 );
 
 module.exports = router;
